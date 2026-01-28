@@ -1,0 +1,33 @@
+# Environment
+.env
+.env.wandb
+.env.local
+
+# WandB
+wandb/
+*.wandb
+
+# Models & Data
+*.pkl
+*.joblib
+*.h5
+*.pth
+data/raw/
+data/processed/
+extracted_data/
+
+# Cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

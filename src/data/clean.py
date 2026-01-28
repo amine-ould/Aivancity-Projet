@@ -54,7 +54,7 @@ def detect_outliers(df, column, method='zscore', threshold=3):
     else:
         raise ValueError("Méthode non reconnue. Utilisez 'zscore' ou 'iqr'.")
 
-def clean_data(input_dir='extracted_data', output_dir='cleaned_data'):
+def clean_data(input_dir='extracted_data', output_dir='data/processed/cleaned_data'):
     """
     Nettoie les données extraites et les sauvegarde dans un nouveau format.
     
@@ -72,10 +72,13 @@ def clean_data(input_dir='extracted_data', output_dir='cleaned_data'):
             logger.info(f"Répertoire créé: {output_dir}")
         
         # Création d'un sous-répertoire pour les visualisations
-
+        viz_dir = os.path.join(output_dir, 'visualizations')
+        if not os.path.exists(viz_dir):
+            os.makedirs(viz_dir)
         
         # Chargement des données extraites
-
+        sensor_data_path = os.path.join(input_dir, 'sensor_data_extracted.parquet')
+        failure_data_path = os.path.join(input_dir, 'failure_data_extracted.parquet')
         
         logger.info(f"Chargement des données capteurs depuis {sensor_data_path}")
         sensor_df = pd.read_parquet(sensor_data_path)
@@ -90,14 +93,16 @@ def clean_data(input_dir='extracted_data', output_dir='cleaned_data'):
         logger.info(f"Valeurs manquantes dans les données capteurs:\n{missing_values_sensor}")
 
         # Remplacer les valeurs infinies et NaN par 0
-
+        sensor_df = sensor_df.replace([np.inf, -np.inf], np.nan)
+        sensor_df = sensor_df.fillna(sensor_df.mean(numeric_only=True))
         
         # 2. Suppression des lignes avec valeurs manquantes (ou imputation selon la stratégie)
-
+        original_len = len(sensor_df)
+        sensor_df = sensor_df.dropna()
         logger.info(f"Lignes supprimées pour valeurs manquantes: {original_len - len(sensor_df)}")
         
         # 3. Vérification des doublons
-
+        duplicates = sensor_df.duplicated().sum()
         logger.info(f"Nombre de doublons dans les données capteurs: {duplicates}")
         sensor_df = sensor_df.drop_duplicates()
         

@@ -3,6 +3,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# Import W&B (optionnel)
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 from sklearn.metrics import confusion_matrix, roc_curve, precision_recall_curve, auc
 from sklearn.metrics import classification_report, average_precision_score
 import joblib
@@ -103,6 +110,14 @@ def plot_confusion_matrix(y_true, y_pred, class_names=None, save_path=None):
     
     if save_path:
         plt.savefig(save_path)
+    
+    # Log to W&B
+    if WANDB_AVAILABLE:
+        try:
+            wandb.log({"confusion_matrix": wandb.Image(plt)})
+        except Exception:
+            pass
+    
     plt.show()
 
 
@@ -134,6 +149,14 @@ def plot_roc_curve(y_true, y_prob, save_path=None):
     
     if save_path:
         plt.savefig(save_path)
+    
+    # Log to W&B
+    if WANDB_AVAILABLE:
+        try:
+            wandb.log({"roc_curve": wandb.Image(plt), "roc_auc": roc_auc})
+        except Exception:
+            pass
+    
     plt.show()
 
 
@@ -162,6 +185,14 @@ def plot_precision_recall_curve(y_true, y_prob, save_path=None):
     
     if save_path:
         plt.savefig(save_path)
+    
+    # Log to W&B
+    if WANDB_AVAILABLE:
+        try:
+            wandb.log({"pr_curve": wandb.Image(plt), "avg_precision": avg_precision})
+        except Exception:
+            pass
+    
     plt.show()
 
 
@@ -193,13 +224,94 @@ def plot_feature_importance(model, feature_names, top_n=20, save_path=None):
         
         if save_path:
             plt.savefig(save_path)
+        
+        # Log to W&B
+        if WANDB_AVAILABLE:
+            try:
+                wandb.log({"feature_importance": wandb.Image(plt)})
+            except Exception:
+                pass
+        
         plt.show()
         
     except (AttributeError, TypeError) as e:
         print(f"Ce modèle ne prend pas en charge l'affichage de l'importance des caractéristiques: {e}")
 
 
-def evaluate_model(model, X_test, y_test, class_names=None, output_dir=None):
+def calculate_economic_impact(y_test, y_pred, y_prob, cost_matrix):
+    """
+    Calcule l'impact économique d'un modèle de maintenance prédictive.
+    Args:
+        y_test: Labels réels
+        y_pred: Prédictions binaires
+        y_prob: Probabilités de prédiction
+        cost_matrix: Dictionnaire des coûts (TP, FP, FN, TN)
+    Returns:
+        dict avec total_cost, baseline_cost, savings, cost_reduction_pct
+    """
+    tn = ((y_test == 0) & (y_pred == 0)).sum()
+    fp = ((y_test == 0) & (y_pred == 1)).sum()
+    fn = ((y_test == 1) & (y_pred == 0)).sum()
+    tp = ((y_test == 1) & (y_pred == 1)).sum()
+    total_cost = (
+        tn * cost_matrix['true_negative'] +
+        fp * cost_matrix['false_positive'] +
+        fn * cost_matrix['false_negative'] +
+        tp * cost_matrix['true_positive']
+    )
+    baseline_cost = (y_test.sum() * cost_matrix['false_negative'])
+    savings = baseline_cost - total_cost
+    cost_reduction_pct = (savings / baseline_cost) * 100 if baseline_cost > 0 else 0
+    return {
+        'total_cost': total_cost,
+        'baseline_cost': baseline_cost,
+        'savings': savings,
+        'cost_reduction_pct': cost_reduction_pct
+    }
+
+
+def find_optimal_threshold(y_test, y_prob, cost_matrix):
+    """
+    Recherche le seuil optimal pour minimiser le coût total.
+    Args:
+        y_test: Labels réels
+        y_prob: Probabilités de prédiction
+        cost_matrix: Dictionnaire des coûts
+    Returns:
+        dict avec optimal_threshold, optimal_cost, confusion_matrix
+    """
+    thresholds = np.linspace(0.01, 0.99, 99)
+    results = []
+    for threshold in thresholds:
+        y_pred_threshold = (y_prob >= threshold).astype(int)
+        tn = ((y_test == 0) & (y_pred_threshold == 0)).sum()
+        fp = ((y_test == 0) & (y_pred_threshold == 1)).sum()
+        fn = ((y_test == 1) & (y_pred_threshold == 0)).sum()
+        tp = ((y_test == 1) & (y_pred_threshold == 1)).sum()
+        total_cost = (
+            tn * cost_matrix['true_negative'] +
+            fp * cost_matrix['false_positive'] +
+            fn * cost_matrix['false_negative'] +
+            tp * cost_matrix['true_positive']
+        )
+        results.append({
+            'threshold': threshold,
+            'total_cost': total_cost,
+            'tp': tp,
+            'fp': fp,
+            'tn': tn,
+            'fn': fn
+        })
+    optimal_result = min(results, key=lambda x: x['total_cost'])
+    optimal_threshold = optimal_result['threshold']
+    return {
+        'optimal_threshold': optimal_threshold,
+        'optimal_cost': optimal_result['total_cost'],
+        'confusion_matrix': [optimal_result['tp'], optimal_result['fp'], optimal_result['fn'], optimal_result['tn']]
+    }
+
+
+def evaluate_model(model, X_test, y_test, class_names=None, output_dir=None, cost_matrix=None):
     """
     Fonction principale pour effectuer l'évaluation complète du modèle.
     
@@ -209,6 +321,7 @@ def evaluate_model(model, X_test, y_test, class_names=None, output_dir=None):
         y_test: Labels de test
         class_names: Noms des classes (optionnel)
         output_dir: Répertoire de sortie pour les graphiques (optionnel)
+        cost_matrix: Matrice de coûts pour l'évaluation économique (optionnel)
         
     Returns:
         results: Dictionnaire contenant les résultats de l'évaluation
@@ -227,6 +340,13 @@ def evaluate_model(model, X_test, y_test, class_names=None, output_dir=None):
     
     # Calculer les métriques de classification
     metrics = calculate_classification_metrics(y_test, y_pred, y_prob)
+    
+    # Log métriques W&B
+    if WANDB_AVAILABLE:
+        try:
+            wandb.log({f"eval/{k}": v for k, v in metrics.items()})
+        except Exception:
+            pass
     
     # Afficher les résultats
     print("\n==== Résultats de l'évaluation ====")
@@ -260,6 +380,53 @@ def evaluate_model(model, X_test, y_test, class_names=None, output_dir=None):
         fi_path = os.path.join(output_dir, "feature_importance.png") if output_dir else None
         plot_feature_importance(model, X_test.columns, save_path=fi_path)
     
+    # Évaluation économique si la matrice de coûts est fournie
+    if cost_matrix is not None and isinstance(cost_matrix, dict):
+        # Trouver le seuil optimal
+        threshold_results = find_optimal_threshold(y_test, y_prob[:, 1], cost_matrix)
+        optimal_threshold = threshold_results['optimal_threshold']
+        print(f"\nSeuil optimal trouvé: {optimal_threshold:.4f}")
+        
+        # Prédictions avec le seuil optimal
+        y_pred_optimal = (y_prob[:, 1] >= optimal_threshold).astype(int)
+        
+        # Calculer l'impact économique
+        economic_impact = calculate_economic_impact(y_test, y_pred_optimal, y_prob, cost_matrix)
+        print("\n==== Impact économique ====")
+        for key, value in economic_impact.items():
+            print(f"{key}: {value}")
+        
+        # Log impact économique W&B
+        if WANDB_AVAILABLE:
+            try:
+                wandb.log({
+                    "economic/optimal_threshold": optimal_threshold,
+                    "economic/total_cost": economic_impact['total_cost'],
+                    "economic/baseline_cost": economic_impact['baseline_cost'],
+                    "economic/savings": economic_impact['savings'],
+                    "economic/cost_reduction_pct": economic_impact['cost_reduction_pct']
+                })
+            except Exception:
+                pass
+        
+        # Matrice de confusion avec le seuil optimal
+        cm_optimal = confusion_matrix(y_test, y_pred_optimal)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm_optimal, annot=True, fmt='d', cmap='Greens', 
+                    xticklabels=class_names, yticklabels=class_names)
+        plt.xlabel('Prédictions (seuil optimal)')
+        plt.ylabel('Valeurs réelles')
+        plt.title('Matrice de confusion avec seuil optimal')
+        
+        # Log matrice optimale W&B
+        if WANDB_AVAILABLE:
+            try:
+                wandb.log({"confusion_matrix_optimal": wandb.Image(plt)})
+            except Exception:
+                pass
+        
+        plt.show()
+    
     return {
         'metrics': metrics,
         'y_true': y_test,
@@ -282,8 +449,16 @@ if __name__ == "__main__":
         # Classes pour les défaillances (à adapter selon vos données)
         class_names = ["Pas de défaillance", "Défaillance"]
         
+        # Matrice de coûts exemple (à adapter selon vos besoins)
+        cost_matrix = {
+            'true_positive': 10000,   # Gain pour une détection correcte
+            'false_positive': -1000,  # Coût d'une fausse alerte
+            'true_negative': 100,     # Gain pour une non-détection correcte
+            'false_negative': -5000    # Coût d'une détection manquée
+        }
+        
         # Évaluer le modèle
-        results = evaluate_model(model, X_test, y_test, class_names, output_dir)
+        results = evaluate_model(model, X_test, y_test, class_names, output_dir, cost_matrix)
         print("\nÉvaluation du modèle terminée avec succès!")
     else:
         print("Impossible de procéder à l'évaluation du modèle.")

@@ -2,13 +2,11 @@ import pandas as pd
 import numpy as np
 import os
 import logging
-from datetime import datetime, timedelta
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from datetime import datetime
+from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.decomposition import PCA
 from scipy import stats
-import matplotlib.pyplot as plt
-import seaborn as sns
 from joblib import dump
 
 # Configuration du logging
@@ -41,7 +39,8 @@ def create_polynomial_features(df, degree=2):
     
     # Pour chaque colonne, créer les puissances jusqu'au degré spécifié
     for col in base_cols:
-
+        for d in range(2, degree + 1):
+            df[f'{col}_power_{d}'] = df[col] ** d
     
     logger.info(f"Caractéristiques polynomiales de degré {degree} créées")
     return df
@@ -72,25 +71,31 @@ def create_cycle_features(df, equipment_ids=None):
     # Pour chaque équipement
     for equip_id in equipment_ids:
         # Filtrer les données pour cet équipement
-        
+        equip_data = df[df['equipment_id'] == equip_id].sort_values('timestamp')
         if len(equip_data) == 0:
             continue
-        
-        # Utiliser le courant pour identifier les cycles (supposant que le courant indique l'activité)
-        # Détecter les démarrages lorsque le courant passe au-dessus d'un seuil
 
-        
-        # Détecter les changements d'état (démarrage/arrêt)
-        
-        # Identifier les cycles (un cycle commence quand la machine démarre)
-        
+        if 'current' not in equip_data.columns or 'timestamp' not in equip_data.columns:
+            logger.warning("Colonnes 'current' ou 'timestamp' manquantes, cycles ignorés")
+            continue
+
+        # Utiliser le courant pour identifier les cycles (supposant que le courant indique l'activité)
+        current_series = equip_data['current'].fillna(method='ffill').fillna(0)
+        threshold = current_series.median() + current_series.std()
+        active = current_series > threshold
+
+        # Détecter les démarrages (front montant)
+        cycle_starts = np.where(active & ~active.shift(1, fill_value=False))[0]
+        if len(cycle_starts) == 0:
+            continue
+
         current_cycle = 1
         for i in range(len(cycle_starts)):
-            start_idx = cycle_starts[i]
+            start_idx = int(cycle_starts[i])
             
             # Validate start_idx
             if start_idx < 0 or start_idx >= len(equip_data):
-                print(f"Invalid start index at cycle {current_cycle}: {start_idx}")
+                logger.warning(f"Index de départ invalide pour le cycle {current_cycle}: {start_idx}")
                 continue  # Skip to the next iteration if the index is invalid
 
             # Determine the end of the cycle (either the next start, or the end of the data)
@@ -101,33 +106,37 @@ def create_cycle_features(df, equipment_ids=None):
 
             # Validate end_idx
             if end_idx < 0 or end_idx > len(equip_data):
-                print(f"Invalid end index at cycle {current_cycle}: {end_idx}")
+                logger.warning(f"Index de fin invalide pour le cycle {current_cycle}: {end_idx}")
                 continue  # Skip to the next iteration if the index is invalid
             
             # Ensure end_idx is not less than start_idx
             if end_idx <= start_idx:
-                print(f"End index {end_idx} is not greater than start index {start_idx} at cycle {current_cycle}")
+                logger.warning(f"Index de fin {end_idx} <= index de début {start_idx} pour le cycle {current_cycle}")
                 continue  # Skip to the next iteration if the indices are invalid
             
             # Assigner l'ID du cycle
             df.loc[equip_data.iloc[start_idx:end_idx].index, 'cycle_id'] = current_cycle
             
             # Calculer la durée du cycle
-            #print(f"Start Index: {start_idx}, End Index: {end_idx}, DataFrame Length: {len(equip_data)}")
-            if start_idx < 0 or start_idx >= len(equip_data):
-                print(f"Invalid start index: {start_idx}")
-            if end_idx < 0 or end_idx >= len(equip_data):
-                print(f"Invalid end index: {end_idx}")
-            if equip_data.empty:
-                print("The equipped data is empty.")
-                return  # Or handle as needed
+            timestamps = pd.to_datetime(equip_data['timestamp'], errors='coerce')
+            start_ts = timestamps.iloc[start_idx]
+            end_ts = timestamps.iloc[end_idx - 1] if end_idx - 1 < len(timestamps) else timestamps.iloc[-1]
+            if pd.isna(start_ts) or pd.isna(end_ts):
+                cycle_duration = end_idx - start_idx
+                time_in_cycle = np.arange(0, end_idx - start_idx)
+            else:
+                cycle_duration = (end_ts - start_ts).total_seconds() / 60.0
+                time_in_cycle = (timestamps.iloc[start_idx:end_idx] - start_ts).dt.total_seconds() / 60.0
 
-            cycle_duration =  # en minutes
             df.loc[equip_data.iloc[start_idx:end_idx].index, 'cycle_duration'] = cycle_duration
-            
+
             # Calculer le temps écoulé dans le cycle et la phase du cycle (0-1)
-            for j in range(start_idx, end_idx):
-            
+            df.loc[equip_data.iloc[start_idx:end_idx].index, 'time_in_cycle'] = time_in_cycle
+            if cycle_duration and cycle_duration > 0:
+                df.loc[equip_data.iloc[start_idx:end_idx].index, 'cycle_phase'] = time_in_cycle / cycle_duration
+            else:
+                df.loc[equip_data.iloc[start_idx:end_idx].index, 'cycle_phase'] = 0
+
             current_cycle += 1
     
     logger.info(f"Caractéristiques de cycle créées pour {len(equipment_ids)} équipements")
@@ -235,6 +244,11 @@ def create_frequency_domain_features(df, columns=['vibration'], fs=1.0, group_by
             spectral_skewness = stats.skew(fft_magnitude) if len(fft_magnitude) > 2 else 0
             
             # Assigner les caractéristiques à chaque ligne de cet équipement
+            df.loc[equip_data.index, f'{col}_dominant_freq'] = dominant_freq
+            df.loc[equip_data.index, f'{col}_spectral_mean'] = spectral_mean
+            df.loc[equip_data.index, f'{col}_spectral_std'] = spectral_std
+            df.loc[equip_data.index, f'{col}_spectral_kurtosis'] = spectral_kurtosis
+            df.loc[equip_data.index, f'{col}_spectral_skewness'] = spectral_skewness
 
     
     logger.info(f"Caractéristiques fréquentielles créées pour {len(columns)} colonnes")
@@ -360,6 +374,39 @@ def create_anomaly_scores(df, columns=None, window_size=20, method='zscore'):
     logger.info(f"Scores d'anomalie calculés pour {len(columns)} colonnes avec la méthode '{method}'")
     return df
 
+def create_rolling_features(group, window_sizes, sensor_cols):
+    """
+    Calcule des caractéristiques statistiques sur une fenêtre glissante pour chaque capteur.
+    
+    Args:
+        group (DataFrame): Données d'un équipement
+        window_sizes (list): Tailles de fenêtres (en nombre d'observations)
+        sensor_cols (list): Colonnes capteurs
+        
+    Returns:
+        DataFrame enrichi
+    """
+    result = group.copy()
+    for col in sensor_cols:
+        for window in window_sizes:
+            sorted_group = group.sort_values('timestamp')
+            result[f'{col}_mean_{window}'] = sorted_group[col].rolling(window=window, min_periods=1).mean()
+            result[f'{col}_std_{window}'] = sorted_group[col].rolling(window=window, min_periods=1).std()
+            result[f'{col}_min_{window}'] = sorted_group[col].rolling(window=window, min_periods=1).min()
+            result[f'{col}_max_{window}'] = sorted_group[col].rolling(window=window, min_periods=1).max()
+            result[f'{col}_median_{window}'] = sorted_group[col].rolling(window=window, min_periods=1).median()
+            result[f'{col}_range_{window}'] = result[f'{col}_max_{window}'] - result[f'{col}_min_{window}']
+            result[f'{col}_iqr_{window}'] = sorted_group[col].rolling(window=window, min_periods=1).quantile(0.75) - sorted_group[col].rolling(window=window, min_periods=1).quantile(0.25)
+            result[f'{col}_diff_{window}'] = sorted_group[col].diff(periods=window).fillna(0)
+            result[f'{col}_pct_change_{window}'] = sorted_group[col].pct_change(periods=window).fillna(0)
+            if window > 1:
+                rolling_data = sorted_group[col].rolling(window=window, min_periods=1)
+                slopes = rolling_data.apply(lambda x: np.polyfit(np.arange(len(x)), x, 1)[0] if len(x) > 1 else 0)
+                result[f'{col}_slope_{window}'] = slopes
+    result = result.replace([np.inf, -np.inf], np.nan)
+    result = result.fillna(0)
+    return result
+
 def build_features(input_dir='augmented_data', output_dir='featured_data'):
     """
     Construit des caractéristiques avancées à partir des données augmentées.
@@ -392,14 +439,17 @@ def build_features(input_dir='augmented_data', output_dir='featured_data'):
         
         # 1. Caractéristiques polynomiales
         logger.info("Création des caractéristiques polynomiales")
+        df = create_polynomial_features(df, degree=2)
         
         # 2. Caractéristiques de cycle (si les données temporelles sont suffisantes)
-        if len(df) > 1000:  # Seuil arbitraire pour éviter le traitement sur trop peu de données
+        if len(df) > 1000 and 'equipment_id' in df.columns and 'timestamp' in df.columns:
             logger.info("Création des caractéristiques de cycle")
+            df = create_cycle_features(df)
         
         # 3. Encoder les variables catégorielles
         logger.info("Encodage des variables catégorielles")
-        
+        df, encoders = encode_categorical_features(df, method='onehot')
+
         # Sauvegarder les encodeurs pour une utilisation future
         dump(encoders, os.path.join(artifacts_dir, 'category_encoders.joblib'))
         
@@ -410,6 +460,7 @@ def build_features(input_dir='augmented_data', output_dir='featured_data'):
         
         # 5. Scores d'anomalie
         logger.info("Calcul des scores d'anomalie")
+        df = create_anomaly_scores(df)
 
         
         # 6. Réduction de dimensionnalité

@@ -38,13 +38,22 @@ def extract_data(sensor_file_path, failure_file_path, output_dir='extracted_data
         sensor_data = pd.read_csv(sensor_file_path)
         
         # Convertir timestamp en datetime pour les données capteurs
+        if 'timestamp' in sensor_data.columns:
+            sensor_data['timestamp'] = pd.to_datetime(sensor_data['timestamp'])
         
         # Extraction des données de défaillance
+        logger.info(f"Extraction des données de défaillance depuis {failure_file_path}")
+        failure_data = pd.read_csv(failure_file_path)
         
         # Convertir failure_timestamp en datetime
+        if 'failure_timestamp' in failure_data.columns:
+            failure_data['failure_timestamp'] = pd.to_datetime(failure_data['failure_timestamp'])
         
         # Sauvegarde des données extraites dans le format parquet pour une meilleure efficacité
-        
+        sensor_output = os.path.join(output_dir, 'sensor_data_extracted.parquet')
+        failure_output = os.path.join(output_dir, 'failure_data_extracted.parquet')
+        sensor_data.to_parquet(sensor_output)
+        failure_data.to_parquet(failure_output)
         
         logger.info(f"Données extraites et sauvegardées dans {output_dir}")
         logger.info(f"Forme des données de capteurs: {sensor_data.shape}")
@@ -74,8 +83,8 @@ def extract_data(sensor_file_path, failure_file_path, output_dir='extracted_data
         
 if __name__ == "__main__":
     # Chemins des fichiers (à ajuster selon votre environnement)
-    SENSOR_FILE = "predictive_maintenance_sensor_data.csv"
-    FAILURE_FILE = "predictive_maintanace_failure_log.csv"
+    SENSOR_FILE = "data/raw/predictive_maintenance_sensor_data.csv"
+    FAILURE_FILE = "data/raw/predictive_maintenance_failure_logs.csv"
     
     # Exécution de la fonction d'extraction
     sensor_df, failure_df = extract_data(SENSOR_FILE, FAILURE_FILE)

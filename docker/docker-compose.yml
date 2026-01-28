@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  ml-project:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ml-project-sprint
+    volumes:
+      - ..:/app
+    environment:
+      - WANDB_API_KEY=${WANDB_API_KEY}
+      - WANDB_MODE=${WANDB_MODE:-offline}
+    command: ["python", "run_training.py"]

@@ -27,11 +27,6 @@ import os
 import logging
 from datetime import datetime
 
-# Import des fonctions principales de chaque module
-from extract import extract_data
-from clean import clean_data
-from augment import augment_data
-
 # Configuration du logging
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +59,11 @@ def process_data(sensor_file_path, failure_file_path, output_dir='processed_data
     try:
         start_time = datetime.now()
         
+        # Importer localement pour éviter d'exécuter des modules au chargement du package
+        from .extract import extract_data
+        from .clean import clean_data
+        from .augment import augment_data
+
         # Créer la structure de répertoires
         extracted_dir = os.path.join(output_dir, 'extracted_data')
         cleaned_dir = os.path.join(output_dir, 'cleaned_data')
@@ -135,16 +135,6 @@ def process_data(sensor_file_path, failure_file_path, output_dir='processed_data
     except Exception as e:
         logger.error(f"Erreur lors du traitement des données: {str(e)}")
         raise
-
-# Si besoin d'imports spécifiques pour le fonctionnement du __init__.py
-import pandas as pd
-import os
-
-processed_data = process_data(
-    sensor_file_path=os.path.abspath("../../data/raw/predictive_maintenance_sensor_data.csv"),
-    failure_file_path=os.path.abspath("../../data/raw/predictive_maintenance_failure_logs.csv"),
-    output_dir=os.path.abspath("../../data/processed/")
-)
 
 # Version du module
 __version__ = '0.1.0'

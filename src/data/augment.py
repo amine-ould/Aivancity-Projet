@@ -34,15 +34,15 @@ def create_time_features(df):
     
     # Extraire les composantes temporelles
     df['hour'] = df['timestamp'].dt.hour
-    df['day_of_week'] = 
-    df['day_of_month'] = 
-    df['month'] = 
-    df['quarter'] = 
-    df['year'] = 
+    df['day_of_week'] = df['timestamp'].dt.dayofweek
+    df['day_of_month'] = df['timestamp'].dt.day
+    df['month'] = df['timestamp'].dt.month
+    df['quarter'] = df['timestamp'].dt.quarter
+    df['year'] = df['timestamp'].dt.year
     
     # Créer des indicateurs pour jour/nuit et semaine/weekend
-    df['is_night'] = 
-    df['is_weekend'] = 
+    df['is_night'] = ((df['hour'] >= 20) | (df['hour'] < 6)).astype(int)
+    df['is_weekend'] = (df['day_of_week'] >= 5).astype(int)
     
     return df
 
@@ -68,10 +68,18 @@ def create_rolling_features(df, window_sizes=[5, 10, 30], group_by='equipment_id
         # Pour chaque colonne numérique
         for col in numeric_cols:
             # Grouper par equipment_id et calculer les statistiques sur la fenêtre glissante
-            df[f'{col}_rolling_mean_{window}'] = 
-            df[f'{col}_rolling_std_{window}'] = 
-            df[f'{col}_rolling_min_{window}'] = 
-            df[f'{col}_rolling_max_{window}'] = 
+            df[f'{col}_rolling_mean_{window}'] = df.groupby(group_by)[col].transform(
+                lambda x: x.rolling(window=window, min_periods=1).mean()
+            )
+            df[f'{col}_rolling_std_{window}'] = df.groupby(group_by)[col].transform(
+                lambda x: x.rolling(window=window, min_periods=1).std()
+            )
+            df[f'{col}_rolling_min_{window}'] = df.groupby(group_by)[col].transform(
+                lambda x: x.rolling(window=window, min_periods=1).min()
+            )
+            df[f'{col}_rolling_max_{window}'] = df.groupby(group_by)[col].transform(
+                lambda x: x.rolling(window=window, min_periods=1).max()
+            )
     
     return df
 

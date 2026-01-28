@@ -26,7 +26,7 @@ featured_data = build_features(
 """
 import os 
 
-from build_features import (
+from .build_features import (
     build_features,
     create_polynomial_features,
     create_cycle_features,
@@ -45,12 +45,6 @@ __all__ = [
     'reduce_dimensionality',
     'create_anomaly_scores'
 ]
-
-
-featured_data = build_features(
-    input_dir=os.path.abspath("../../data/processed/augmented_data/"),
-    output_dir=os.path.abspath("../../data/processed/")
-)
 
 # Version du module
 __version__ = '0.1.0'

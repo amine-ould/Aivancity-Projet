@@ -11,13 +11,26 @@ import numpy as np
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    precision_score,
+    recall_score,
+    f1_score
+)
 import logging
-import joblib
 from datetime import datetime
 import xgboost as xgb
 import lightgbm as lgb
+
+# Import W&B (optionnel)
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    print("W&B n'est pas disponible. Continuing sans tracking W&B.")
 
 # Configuration du logging
 logging.basicConfig(
@@ -61,6 +74,7 @@ class ModelTrainer:
             print("RAPIDS cuML n'est pas disponible, utilisation des CPU fallbacks")
 
         self.use_gpu = use_gpu and GPU_AVAILABLE
+        self.wandb_run = None
         
         if self.use_gpu:
             self.models = {
@@ -74,7 +88,7 @@ class ModelTrainer:
                 },
                 # Autres modèles GPU...
                 'xgboost': {
-                    'model': xgb.XGBClassifier(tree_method='gpu_hist', gpu_id=0, random_state=random_state),
+                    'model': xgb.XGBClassifier(tree_method='hist', device='cuda', random_state=random_state),
                     'params': {
                         'n_estimators': [100, 200],
                         'learning_rate': [0.01, 0.1, 0.2],
@@ -82,7 +96,7 @@ class ModelTrainer:
                     }
                 },
                 'lightgbm': {
-                    'model': lgb.LGBMClassifier(device='gpu', random_state=random_state),
+                    'model': lgb.LGBMClassifier(device='gpu', verbose=-1, random_state=random_state),
                     'params': {
                         'n_estimators': [100, 200],
                         'learning_rate': [0.01, 0.1, 0.2],
@@ -117,7 +131,7 @@ class ModelTrainer:
                     }
                 },
                 'xgboost': {
-                    'model': xgb.XGBClassifier(random_state=random_state),
+                    'model': xgb.XGBClassifier(tree_method='hist', random_state=random_state),
                     'params': {
                         'n_estimators': [100, 200],
                         'learning_rate': [0.01, 0.1, 0.2],
@@ -125,7 +139,7 @@ class ModelTrainer:
                     }
                 },
                 'lightgbm': {
-                    'model': lgb.LGBMClassifier(random_state=random_state),
+                    'model': lgb.LGBMClassifier(device='gpu', verbose=-1, random_state=random_state),
                     'params': {
                         'n_estimators': [100, 200],
                         'learning_rate': [0.01, 0.1, 0.2],
@@ -183,6 +197,20 @@ class ModelTrainer:
 
         logger.info(f"Ensemble d'entraînement: {X_train.shape} échantillons")
         logger.info(f"Ensemble de test: {X_test.shape} échantillons")
+
+        # Log W&B distribution des classes (train/test)
+        if WANDB_AVAILABLE and self.wandb_run is not None:
+            try:
+                train_dist = y_train.value_counts(normalize=True).to_dict()
+                test_dist = y_test.value_counts(normalize=True).to_dict()
+                wandb.log({
+                    "data/train_pos_rate": float(train_dist.get(1, 0)),
+                    "data/train_neg_rate": float(train_dist.get(0, 0)),
+                    "data/test_pos_rate": float(test_dist.get(1, 0)),
+                    "data/test_neg_rate": float(test_dist.get(0, 0))
+                })
+            except Exception as e:
+                logger.warning(f"Erreur lors du logging distribution classes W&B: {e}")
         
         return X_train, X_test, y_train, y_test
     
@@ -218,18 +246,30 @@ class ModelTrainer:
                 param_grid=model_info['params'],
                 cv=cv,
                 scoring='roc_auc',
-                n_jobs=-1,
-                verbose=1
+                n_jobs=1,
+                verbose=0
             )
             
             try:
                 grid_search.fit(X_train, y_train)
+                
                 best_model = grid_search.best_estimator_
                 best_params = grid_search.best_params_
                 best_score = grid_search.best_score_
                 
                 logger.info(f"Meilleurs paramètres pour {model_name}: {best_params}")
                 logger.info(f"Meilleur score de validation croisée (AUC): {best_score:.4f}")
+                
+                # Log W&B metrics
+                if WANDB_AVAILABLE and self.wandb_run is not None:
+                    try:
+                        wandb.log({
+                            f"{model_name}/cv_auc": best_score,
+                            f"{model_name}/best_params": best_params
+                        })
+                        wandb.config.update({f"{model_name}_params": best_params})
+                    except Exception as e:
+                        logger.warning(f"Erreur lors du logging W&B: {e}")
                 
                 trained_models[model_name] = {
                     'model': best_model,
@@ -269,17 +309,41 @@ class ModelTrainer:
             accuracy = (y_pred == y_test).astype(int).mean()
             conf_matrix = confusion_matrix(y_test, y_pred)
             class_report = classification_report(y_test, y_pred)
+            class_report_dict = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
             auc_score = roc_auc_score(y_test, y_pred_proba)
+            recall = recall_score(y_test, y_pred, zero_division=0)
+            precision = precision_score(y_test, y_pred, zero_division=0)
+            f1 = f1_score(y_test, y_pred, zero_division=0)
             
             logger.info(f"Précision sur l'ensemble de test: {accuracy:.4f}")
             logger.info(f"AUC sur l'ensemble de test: {auc_score:.4f}")
             logger.info(f"Matrice de confusion:\n{conf_matrix}")
+            logger.info(f"Rappel (classe panne): {recall:.4f}")
+            logger.info(f"Précision (classe panne): {precision:.4f}")
+            logger.info(f"F1 (classe panne): {f1:.4f}")
+            
+            # Log W&B metrics
+            if WANDB_AVAILABLE and self.wandb_run is not None:
+                try:
+                    wandb.log({
+                        f"{model_name}/test_accuracy": accuracy,
+                        f"{model_name}/test_auc": auc_score,
+                        f"{model_name}/test_recall": recall,
+                        f"{model_name}/test_precision": precision,
+                        f"{model_name}/test_f1": f1
+                    })
+                except Exception as e:
+                    logger.warning(f"Erreur lors du logging W&B: {e}")
             
             evaluation_results[model_name] = {
                 'accuracy': accuracy,
                 'confusion_matrix': conf_matrix,
                 'classification_report': class_report,
-                'auc': auc_score
+                'classification_report_dict': class_report_dict,
+                'auc': auc_score,
+                'recall': recall,
+                'precision': precision,
+                'f1': f1
             }
         
         return evaluation_results
@@ -413,7 +477,8 @@ class ModelTrainer:
                 logger.info(f"Coefficients pour {model_name} sauvegardés à {coef_path}")
 
 def train_and_evaluate(data_path, target_column='failure_within_24h', models_to_train=None, 
-                      models_dir="models", test_size=0.2, random_state=42, cv=5):
+                      models_dir="models", test_size=0.2, random_state=42, cv=5, use_wandb=True, 
+                      wandb_project="predictive-maintenance", wandb_run_name=None, wandb_run=None):
     """
     Fonction principale pour entraîner et évaluer les modèles.
     
@@ -425,10 +490,35 @@ def train_and_evaluate(data_path, target_column='failure_within_24h', models_to_
         test_size (float): Proportion des données pour le test
         random_state (int): Graine aléatoire pour la reproductibilité
         cv (int): Nombre de plis pour la validation croisée
+        use_wandb (bool): Utiliser W&B pour le tracking
+        wandb_project (str): Nom du projet W&B
+        wandb_run_name (str): Nom du run W&B
         
     Returns:
-        tuple: (trained_models, evaluation_results, model_paths)
+        tuple: (trained_models, evaluation_results, model_paths, best_model)
     """
+    # Initialiser W&B si disponible et demandé
+    created_wandb_run = False
+    if use_wandb and WANDB_AVAILABLE and wandb_run is None:
+        try:
+            wandb_run = wandb.init(
+                project=wandb_project,
+                name=wandb_run_name,
+                config={
+                    "data_path": data_path,
+                    "target_column": target_column,
+                    "test_size": test_size,
+                    "random_state": random_state,
+                    "cv_folds": cv,
+                    "models": models_to_train if models_to_train else "all"
+                }
+            )
+            created_wandb_run = True
+            logger.info(f"W&B run initialisé: {wandb_run.name}")
+        except Exception as e:
+            logger.warning(f"Impossible d'initialiser W&B: {e}")
+            wandb_run = None
+    
     # Initialiser le ModelTrainer
     trainer = ModelTrainer(
         data_path=data_path,
@@ -436,6 +526,7 @@ def train_and_evaluate(data_path, target_column='failure_within_24h', models_to_
         test_size=test_size,
         random_state=random_state
     )
+    trainer.wandb_run = wandb_run
     
     # Charger les données
     data = trainer.load_data()
@@ -482,6 +573,32 @@ def train_and_evaluate(data_path, target_column='failure_within_24h', models_to_
         trained_models=trained_models,
         feature_names=list(X_train.columns)
     )
+    
+    # Sauvegarder le meilleur modèle comme artifact W&B
+    if wandb_run is not None and best_model in model_paths:
+        try:
+            artifact = wandb.Artifact(
+                name=f"model-{best_model}",
+                type="model",
+                description=f"Meilleur modèle: {best_model} avec AUC={evaluation_results[best_model]['auc']:.4f}",
+                metadata={
+                    "accuracy": float(evaluation_results[best_model]['accuracy']),
+                    "auc": float(evaluation_results[best_model]['auc']),
+                    "model_type": best_model
+                }
+            )
+            artifact.add_file(model_paths[best_model])
+            wandb_run.log_artifact(artifact)
+            logger.info(f"Meilleur modèle sauvegardé comme artifact W&B: {best_model}")
+        except Exception as e:
+            logger.warning(f"Erreur lors de la sauvegarde de l'artifact W&B: {e}")
+    
+    # Finir le run W&B
+    if created_wandb_run and wandb_run is not None:
+        try:
+            wandb.finish()
+        except Exception as e:
+            logger.warning(f"Erreur lors de la fermeture W&B: {e}")
     
     return trained_models, evaluation_results, model_paths, best_model
 

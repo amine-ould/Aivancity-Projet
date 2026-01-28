@@ -1,0 +1,8 @@
+monitoring:
+  enable_wandb: true
+  wandb_project: industrial-failure-prediction
+  wandb_entity: ouldamroucheamine-aivancity-school-for-technology-busine
+  tags:
+    - training
+    - production
+  notes: Entraînement complet avec tous les modèles

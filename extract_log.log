@@ -1,3 +1,0 @@
-2026-01-14 09:31:09,662 - extract - INFO - Répertoire créé: extracted_data
-2026-01-14 09:31:09,663 - extract - INFO - Extraction des données de capteurs depuis predictive_maintenance_sensor_data.csv
-2026-01-14 09:31:09,666 - extract - ERROR - Erreur lors de l'extraction des données: [Errno 2] No such file or directory: 'predictive_maintenance_sensor_data.csv'
